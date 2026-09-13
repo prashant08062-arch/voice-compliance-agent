@@ -1,0 +1,117 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Customers (CRM context fed to Listening Agents) ────────────────────────
+model Customer {
+  id             String   @id @default(cuid())
+  name           String
+  personaKey     String? // "furious_loyalist" etc.
+  tenureYears    Int      @default(1)
+  tier           String   @default("STANDARD") // HIGH_VALUE | STANDARD | NEW
+  accountBalance Float    @default(0)
+  lateFeesYTD    Float    @default(0)
+  openLateFee    Float    @default(0)
+  eligibilityFlags String @default("[]") // JSON array e.g. ["upgradeEligible"]
+  riskProfile    String   @default("LOW") // LOW | MEDIUM | HIGH
+  notes          String   @default("")
+  createdAt      DateTime @default(now())
+  calls          Call[]
+}
+
+// ─── Calls ───────────────────────────────────────────────────────────────────
+model Call {
+  id             String   @id @default(cuid())
+  customerId     String
+  customer       Customer @relation(fields: [customerId], references: [id])
+  status         String   @default("ACTIVE") // ACTIVE | COMPLETED
+  startedAt      DateTime @default(now())
+  endedAt        DateTime?
+  csat           Int? // 1-5
+  retained       Boolean?
+  escalated      Boolean?
+  strategy       String? // IMMEDIATE_RESOLUTION | SCHEDULED_CALLBACK | TRANSFER | AI_ONLY
+  transcript     String   @default("[]") // JSON [{role, text, ts}]
+  decisions      Decision[]
+  journal        JournalEntry?
+}
+
+// ─── Decisions (counterfactual memory: every proposal, approved or rejected) ─
+model Decision {
+  id             String   @id @default(cuid())
+  callId         String
+  call           Call     @relation(fields: [callId], references: [id])
+  seq            Int      @default(0)
+  createdAt      DateTime @default(now())
+  customerIssue  String
+  proposal       String   @default("{}") // JSON Proposal
+  signals        String   @default("{}") // JSON ListeningSignals
+  decision       String   @default("APPROVED") // APPROVED | REJECTED
+  ruleCode       String?  // triggered rule
+  reason         String   @default("")
+  fallbackScript String?
+  executedScript String?
+  executed       Boolean  @default(false)
+  usedFallbackAI Boolean  @default(false) // heuristic mode when LLM unavailable
+  counterfactual String? // "Why didn't you say that?" explanation (post-outcome)
+}
+
+// ─── Compliance Governor rules (deterministic, editable) ─────────────────────
+model Rule {
+  id          String   @id @default(cuid())
+  code        String   @unique // FIN-001, ESC-001 …
+  category    String   // FINANCIAL | ESCALATION | REGULATORY | PRIVACY
+  name        String
+  description String
+  params      String   @default("{}") // JSON, e.g. {"cap":25}
+  active      Boolean  @default(true)
+  priority    Int      @default(100) // lower runs first
+  updatedAt   DateTime @updatedAt
+}
+
+// ─── Conversation Journal (post-call learning chain) ─────────────────────────
+model JournalEntry {
+  id                  String   @id @default(cuid())
+  callId              String   @unique
+  call                Call     @relation(fields: [callId], references: [id])
+  thesis              String
+  signalsUsed         String   @default("{}") // JSON
+  decisionSummary     String
+  strategy            String   @default("AI_ONLY")
+  executionSummary    String
+  outcomeCsat         Int?
+  outcomeRetained     Boolean?
+  outcomeEscalated    Boolean?
+  frustrationLevel    Float    @default(0)
+  competitorMentioned Boolean  @default(false)
+  perkOffered         Boolean  @default(false)
+  thesisVerdict       String   @default("INCONCLUSIVE") // RIGHT | WRONG | INCONCLUSIVE
+  lesson              String
+  createdAt           DateTime @default(now())
+}
+
+// ─── Distilled post-call learning patterns ──────────────────────────────────
+model Learning {
+  id            String   @id @default(cuid())
+  patternKey    String   @unique
+  category      String   // CSAT | WINBACK | RETENTION
+  conditionLabel String
+  outcomeLabel  String
+  value         Float    // 0..1
+  sampleSize    Int      @default(0)
+  contrastKey   String?  // paired pattern for comparison
+  source        String   @default("HISTORICAL") // HISTORICAL | LIVE
+  discoveredAt  DateTime @default(now())
+}
+
+// ─── Live ops state (supervisor queue etc.) ──────────────────────────────────
+model SystemState {
+  id                   String   @id @default("main")
+  supervisorWaitMinutes Float   @default(7)
+  updatedAt            DateTime @updatedAt
+}
