@@ -6,6 +6,7 @@ import { runThesisAgent } from "@/lib/agents/thesis";
 import { evaluateProposal } from "@/lib/compliance/engine";
 import { generateCustomerUtterance, getPersonas } from "@/lib/agents/persona";
 import type {
+  AudioIntel,
   CustomerContext,
   Proposal,
   TranscriptTurn,
@@ -14,7 +15,10 @@ import type {
 } from "@/lib/agents/types";
 
 // POST /api/calls/[id]/turn
-// Body: { text?: string, autopilot?: boolean }
+// Body: { text?: string, autopilot?: boolean, audioIntel?: AudioIntel }
+// audioIntel is attached when the utterance arrived via the AssemblyAI
+// voice-intake path (speech-to-text + sentiment) — it grounds the Empathy
+// listening agent with real acoustic evidence.
 // Runs the FULL pipeline: Listening Agents → Thesis Agent → Compliance Governor
 // → Voice Executor script selection. Returns every stage for the sidebar.
 export async function POST(
@@ -37,6 +41,23 @@ export async function POST(
     const transcript = parseJson<TranscriptTurn[]>(call.transcript, []);
 
     // ── 1. Obtain the customer utterance ─────────────────────────────────────
+    // Optional AssemblyAI audio intel (voice-intake path): validated shape only.
+    const rawIntel = body.audioIntel as Partial<AudioIntel> | undefined;
+    const audioIntel: AudioIntel | undefined =
+      rawIntel &&
+      (rawIntel.sentiment === "POSITIVE" || rawIntel.sentiment === "NEGATIVE" || rawIntel.sentiment === "NEUTRAL") &&
+      typeof rawIntel.transcript === "string"
+        ? {
+            provider: rawIntel.provider === "assemblyai" ? "assemblyai" : "demo",
+            transcript: rawIntel.transcript,
+            sentiment: rawIntel.sentiment,
+            sentimentConfidence:
+              typeof rawIntel.sentimentConfidence === "number" ? rawIntel.sentimentConfidence : 0.5,
+            durationSec: typeof rawIntel.durationSec === "number" ? rawIntel.durationSec : undefined,
+            words: typeof rawIntel.words === "number" ? rawIntel.words : undefined,
+          }
+        : undefined;
+
     let customerText = typeof body.text === "string" ? body.text.trim() : "";
     let autopilotUsedFallback = false;
     if (!customerText && body.autopilot) {
@@ -78,7 +99,8 @@ export async function POST(
     // ── 2. Listening Agents (committee) ──────────────────────────────────────
     const { signals, usedFallback: listeningFallback } = await runListeningAgents(
       transcriptWithCustomer,
-      customerCtx
+      customerCtx,
+      audioIntel
     );
 
     // ── 3. Response Thesis Agent (AI proposes) ───────────────────────────────

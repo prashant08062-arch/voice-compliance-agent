@@ -25,7 +25,7 @@ Every rejected utterance is kept in **counterfactual memory**, and every complet
 
 ```mermaid
 flowchart TD
-    A[Live Audio · CRM Transcript · History · Sentiment · Tone · Account Context] --> B
+    A[AssemblyAI Speech-to-Text + Sentiment · CRM Transcript · History · Account Context] --> B
 
     subgraph B [Listening Agents]
         B1[Empathy]
@@ -52,6 +52,17 @@ flowchart TD
     G --> H[(Counterfactual Memory)]
     G --> I[(Conversation Journal → Post-Call Learning)]
 ```
+
+### AssemblyAI voice intake
+
+The Live Call tab has a **Voice Intake** panel powered by [AssemblyAI](https://www.assemblyai.com/):
+record the customer from your microphone (or play one of the two bundled sample recordings) and
+the audio is sent server-side to AssemblyAI for **speech-to-text + sentiment analysis**. The
+transcript becomes the customer utterance and the sentiment reading is injected as acoustic
+evidence into the **Empathy listening agent**, whose verdict then flows into the thesis and the
+Governor exactly as before — audio in, governed voice out. The API key never leaves the server;
+without one the panel runs in clearly-labelled DEMO mode (bundled samples replay pre-computed
+transcripts, so the flow stays demonstrable end-to-end).
 
 ## The worked example
 
@@ -133,7 +144,7 @@ The seeded historical corpus (590 calls) ships these patterns out of the box; **
 
 Five tabs, one operator console:
 
-- **Live Call** — connect one of four personas (furious loyalist, polite disputer, competitor shopper, closure threat), watch the four-stage pipeline animate per turn, hear TTS speak approved/fallback scripts, complete the call with an outcome dialog.
+- **Live Call** — AssemblyAI voice intake (record the customer or play a bundled sample: speech-to-text + sentiment feeds the Empathy agent), connect one of four personas (furious loyalist, polite disputer, competitor shopper, closure threat), watch the four-stage pipeline animate per turn, hear TTS speak approved/fallback scripts, complete the call with an outcome dialog.
 - **Decision Dashboard** — stats, the full counterfactual memory table, filterable by decision/rule, with per-rejection explanations.
 - **Journal** — the seven-step THESIS → … → LESSON chain for every completed call.
 - **Post-Call Learning** — historical contrast cards plus LIVE patterns aggregated from your own calls.
@@ -146,7 +157,8 @@ Five tabs, one operator console:
 | Framework | Next.js 16 (App Router, TypeScript) |
 | UI | Tailwind CSS 4 + shadcn/ui + Lucide |
 | Database | Prisma ORM — SQLite (dev) / Postgres (prod) |
-| Voice | TTS via `z-ai-web-dev-sdk`, browser speech-synthesis fallback |
+| Voice intake | AssemblyAI speech-to-text + sentiment analysis (REST, zero extra deps) |
+| Voice output | TTS via `z-ai-web-dev-sdk`, browser speech-synthesis fallback |
 | Agents | LLM committee with deterministic heuristic fallback |
 | Compliance | 100% deterministic TypeScript rule engine — no LLM judging |
 
@@ -196,6 +208,7 @@ Vercel's filesystem is ephemeral, so production needs a hosted Postgres. The who
 |---|---|---|
 | `DATABASE_URL` | **yes** | `file:../db/custom.db` locally · hosted Postgres URL on Vercel. The `scripts/db-provider.mjs` hook switches the Prisma provider automatically. |
 | `ZAI_API_KEY` | no | Enables the LLM agent committee + cloud TTS. Without it: deterministic heuristic agents + browser speech synthesis. |
+| `ASSEMBLYAI_API_KEY` | no | Enables live AssemblyAI speech-to-text + sentiment in the Voice Intake panel. Without it: demo mode (bundled samples replay pre-computed transcripts). |
 
 ### Graceful degradation
 
@@ -204,6 +217,7 @@ Vercel's filesystem is ephemeral, so production needs a hosted Postgres. The who
 | Listening agents + thesis | LLM-synthesized proposals | Deterministic keyword heuristics (bold by design) |
 | Compliance Governor | Identical — always deterministic rules | Identical |
 | Voice executor | Cloud TTS (7 voices) | Browser `speechSynthesis` |
+| Voice intake | AssemblyAI speech-to-text + sentiment on any recorded audio | Demo mode — bundled samples replay pre-computed transcripts |
 
 ## Repository structure
 

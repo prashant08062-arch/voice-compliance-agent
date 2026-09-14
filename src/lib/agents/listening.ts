@@ -5,12 +5,13 @@
 
 import { chatJson } from "@/lib/llm";
 import { getEffectiveWaiverCap } from "@/lib/compliance/engine";
-import type { CustomerContext, ListeningSignals, TranscriptTurn } from "./types";
+import type { AudioIntel, CustomerContext, ListeningSignals, TranscriptTurn } from "./types";
 import { heuristicSignals } from "./fallback";
 
 export async function runListeningAgents(
   transcript: TranscriptTurn[],
-  customer: CustomerContext
+  customer: CustomerContext,
+  audioIntel?: AudioIntel
 ): Promise<{ signals: ListeningSignals; usedFallback: boolean }> {
   const cap = await getEffectiveWaiverCap(customer);
   const convo = transcript
@@ -47,7 +48,13 @@ risk profile: ${customer.riskProfile}
 
 CURRENT AUTONOMOUS FINANCIAL AUTHORITY (from the live Compliance Governor rulebook):
 - Goodwill credit cap without supervisor: $${cap.effective}${cap.loyaltyActive ? " (loyalty override rule is active: tenured high-value clients qualify for the raised cap)" : " (base cap; loyalty override rule currently INACTIVE)"}
-
+${
+  audioIntel
+    ? `\nASSEMBLYAI AUDIO INTELLIGENCE (speech-to-text + sentiment from the customer's live audio):
+- sentiment: ${audioIntel.sentiment} (confidence ${audioIntel.sentimentConfidence})${audioIntel.provider === "assemblyai" ? "" : " (demo-mode value)"}
+- The Empathy agent MUST factor this acoustic evidence into emotion and frustration_level alongside the transcript wording.\n`
+    : ""
+}
 LIVE CALL TRANSCRIPT:
 ${convo}
 
@@ -59,9 +66,16 @@ Produce the five-agent JSON verdict now.`;
     parsed.empathy.frustration_level = clamp01(Number(parsed.empathy.frustration_level) || 0);
     parsed.account.tenure_years = customer.tenureYears;
     parsed.account.tier = customer.tier;
+    if (audioIntel) {
+      parsed.audio_intel = {
+        provider: audioIntel.provider,
+        sentiment: audioIntel.sentiment,
+        confidence: audioIntel.sentimentConfidence,
+      };
+    }
     return { signals: parsed, usedFallback: false };
   }
-  return { signals: heuristicSignals(transcript, customer), usedFallback: true };
+  return { signals: heuristicSignals(transcript, customer, audioIntel), usedFallback: true };
 }
 
 function clamp01(n: number) {

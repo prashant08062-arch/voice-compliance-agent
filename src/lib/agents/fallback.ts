@@ -3,6 +3,7 @@
 // degrades to these keyword-driven heuristics so the demo ALWAYS runs.
 
 import type {
+  AudioIntel,
   CustomerContext,
   ListeningSignals,
   Proposal,
@@ -25,7 +26,8 @@ const CANCEL_WORDS = ["cancel", "close my account", "closing my account", "shut 
 
 export function heuristicSignals(
   transcript: TranscriptTurn[],
-  customer: CustomerContext
+  customer: CustomerContext,
+  audioIntel?: AudioIntel
 ): ListeningSignals {
   const customerText = transcript
     .filter((t) => t.role === "customer")
@@ -33,11 +35,19 @@ export function heuristicSignals(
     .join(" ");
   const hits = (list: string[]) => list.filter((w) => customerText.includes(w)).length;
   const fury = hits(FURY_WORDS);
-  const frustration = Math.min(1, fury >= 4 ? 0.9 : fury >= 2 ? 0.7 : fury === 1 ? 0.5 : 0.25);
+  let frustration = Math.min(1, fury >= 4 ? 0.9 : fury >= 2 ? 0.7 : fury === 1 ? 0.5 : 0.25);
   const competitor = hits(COMPETITOR_WORDS) > 0;
   const supervisor = hits(SUPERVISOR_WORDS) > 0;
   const cancel = hits(CANCEL_WORDS) > 0;
   const lateFee = hits(LATEFEE_WORDS) > 0;
+
+  // AssemblyAI audio sentiment is independent acoustic evidence — let a
+  // strongly negative tone raise the empathy reading even when wording is calm.
+  if (audioIntel && audioIntel.sentiment === "NEGATIVE") {
+    frustration = Math.min(1, frustration + 0.15);
+  } else if (audioIntel && audioIntel.sentiment === "POSITIVE") {
+    frustration = Math.max(0, frustration - 0.1);
+  }
 
   const emotion =
     frustration >= 0.85 ? "FURIOUS" :
@@ -97,8 +107,19 @@ export function heuristicSignals(
       competitor_mentioned: competitor,
       supervisor_requested: supervisor,
       cancellation_intent: cancel,
-      notes: "Heuristic mode: keyword-based signal extraction (LLM unavailable).",
+      notes: audioIntel
+        ? `Heuristic mode: keyword extraction + ${audioIntel.provider === "assemblyai" ? "AssemblyAI" : "demo"} audio sentiment (${audioIntel.sentiment}, ${audioIntel.sentimentConfidence}).`
+        : "Heuristic mode: keyword-based signal extraction (LLM unavailable).",
     },
+    ...(audioIntel
+      ? {
+          audio_intel: {
+            provider: audioIntel.provider,
+            sentiment: audioIntel.sentiment,
+            confidence: audioIntel.sentimentConfidence,
+          },
+        }
+      : {}),
   };
 }
 

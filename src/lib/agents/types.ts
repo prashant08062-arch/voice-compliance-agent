@@ -24,8 +24,26 @@ export interface Proposal {
   rationale: string; // why the committee arrived at this thesis
 }
 
+/** Shared shape returned by the AssemblyAI voice-intake endpoint
+ *  (speech-to-text + sentiment on the customer's audio). */
+export interface AudioIntel {
+  provider: "assemblyai" | "demo";
+  transcript: string;
+  sentiment: "POSITIVE" | "NEGATIVE" | "NEUTRAL";
+  sentimentConfidence: number;
+  durationSec?: number;
+  words?: number;
+}
+
 /** Structured output of the five Listening Agents. */
 export interface ListeningSignals {
+  /** Attached when the utterance arrived via the AssemblyAI voice-intake
+   *  path — real acoustic evidence for the Empathy agent. */
+  audio_intel?: {
+    provider: "assemblyai" | "demo";
+    sentiment: "POSITIVE" | "NEGATIVE" | "NEUTRAL";
+    confidence: number;
+  };
   empathy: {
     emotion: string; // e.g. FURIOUS, FRUSTRATED, CALM, SATISFIED
     frustration_level: number; // 0..1

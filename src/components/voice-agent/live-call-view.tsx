@@ -24,6 +24,10 @@ import {
   Ear,
   Brain,
   AudioLines,
+  Mic,
+  Square,
+  Play,
+  Loader2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -44,6 +48,7 @@ import { useToast } from "@/hooks/use-toast";
 import { PipelineSidebar, type PipelineData } from "./pipeline-sidebar";
 import { DecisionStamp, EmotionBadge, KV, money, timeOf } from "./shared";
 import type {
+  AudioIntel,
   CallRecord,
   JournalRecord,
   Persona,
@@ -76,6 +81,13 @@ export function LiveCallView({ onNavigate }: { onNavigate: (tab: string) => void
   const [submitting, setSubmitting] = useState(false);
   const [journalResult, setJournalResult] = useState<JournalRecord | null>(null);
   const [elapsed, setElapsed] = useState(0);
+  // ── AssemblyAI voice intake ────────────────────────────────────────────
+  const [aaiConfigured, setAaiConfigured] = useState<boolean | null>(null);
+  const [recording, setRecording] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+  const [lastIntel, setLastIntel] = useState<AudioIntel | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const revealTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -86,6 +98,11 @@ export function LiveCallView({ onNavigate }: { onNavigate: (tab: string) => void
       .then((r) => r.json())
       .then(setBoot)
       .catch(() => toast({ title: "Failed to load personas", variant: "destructive" }));
+    // AssemblyAI status chip (LIVE vs demo mode)
+    fetch("/api/assemblyai/transcribe")
+      .then((r) => r.json())
+      .then((d) => setAaiConfigured(Boolean(d.configured)))
+      .catch(() => setAaiConfigured(false));
     return () => {
       revealTimers.current.forEach(clearTimeout);
       audioRef.current?.pause();
@@ -198,9 +215,15 @@ export function LiveCallView({ onNavigate }: { onNavigate: (tab: string) => void
   }
 
   // ── turn pipeline ───────────────────────────────────────────────────────────
-  async function sendTurn(text?: string, autopilot = false) {
+  async function sendTurn(text?: string, autopilot = false, intel?: AudioIntel) {
     if (!call || processing) return;
-    const body = text?.trim() ? { text: text.trim() } : autopilot ? { autopilot: true } : null;
+    const body = text?.trim()
+      ? intel
+        ? { text: text.trim(), audioIntel: intel }
+        : { text: text.trim() }
+      : autopilot
+      ? { autopilot: true }
+      : null;
     if (!body) return;
     setProcessing(true);
     setRevealed([false, false, false, false]);
@@ -281,6 +304,100 @@ export function LiveCallView({ onNavigate }: { onNavigate: (tab: string) => void
     setRevealed([false, false, false, false]);
     setAudioUrl(null);
     setDraft("");
+    setLastIntel(null);
+  }
+
+  // ── AssemblyAI voice intake ──────────────────────────────────────────────
+  function blobToBase64(blob: Blob): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const result = String(reader.result || "");
+        resolve(result.split(",")[1] || "");
+      };
+      reader.onerror = () => reject(new Error("Could not read the audio"));
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  async function handleIntel(intel: AudioIntel) {
+    setLastIntel(intel);
+    toast({
+      title: `Transcript ready — ${intel.provider === "assemblyai" ? "AssemblyAI" : "demo mode"}`,
+      description: `Sentiment ${intel.sentiment} (${Math.round(intel.sentimentConfidence * 100)}% confidence)${
+        intel.words ? ` · ${intel.words} words` : ""
+      } — running the committee on it.`,
+    });
+    // auto-run the committee on the transcribed utterance
+    setTimeout(() => sendTurn(intel.transcript, false, intel), 700);
+  }
+
+  async function runTranscribe(audioBase64?: string, sampleId?: string) {
+    setTranscribing(true);
+    try {
+      const res = await fetch("/api/assemblyai/transcribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ audioBase64, sampleId }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Transcription failed");
+      await handleIntel(data as AudioIntel);
+    } catch (err) {
+      toast({ title: "Voice intake failed", description: (err as Error).message, variant: "destructive" });
+    } finally {
+      setTranscribing(false);
+    }
+  }
+
+  async function toggleRecording() {
+    if (recording) {
+      mediaRecorderRef.current?.stop();
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mr = new MediaRecorder(stream);
+      chunksRef.current = [];
+      mr.ondataavailable = (e) => {
+        if (e.data.size > 0) chunksRef.current.push(e.data);
+      };
+      mr.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop());
+        setRecording(false);
+        const blob = new Blob(chunksRef.current, { type: mr.mimeType || "audio/webm" });
+        if (blob.size < 1200) {
+          toast({
+            title: "Recording too short",
+            description: "Hold the mic a little longer — the customer needs to finish a sentence.",
+          });
+          return;
+        }
+        await runTranscribe(await blobToBase64(blob));
+      };
+      mediaRecorderRef.current = mr;
+      mr.start();
+      setRecording(true);
+    } catch {
+      toast({
+        title: "Microphone unavailable",
+        description: "The browser blocked mic access — use a bundled sample instead.",
+        variant: "destructive",
+      });
+    }
+  }
+
+  async function playSample(sampleId: string) {
+    try {
+      const res = await fetch(`/samples/${sampleId}.mp3`);
+      if (!res.ok) throw new Error("Sample audio not found");
+      const blob = await res.blob();
+      // let the customer "speak" while the intake pipeline transcribes
+      new Audio(URL.createObjectURL(blob)).play().catch(() => {});
+      await runTranscribe(await blobToBase64(blob), sampleId);
+    } catch (err) {
+      toast({ title: "Sample failed", description: (err as Error).message, variant: "destructive" });
+    }
   }
 
   // ── ops console (supervisor queue) ────────────────────────────────────────
@@ -459,6 +576,17 @@ export function LiveCallView({ onNavigate }: { onNavigate: (tab: string) => void
             </div>
           </div>
 
+          {/* AssemblyAI voice intake — speech-to-text + sentiment */}
+          <VoiceIntake
+            configured={aaiConfigured}
+            recording={recording}
+            transcribing={transcribing}
+            intel={lastIntel}
+            disabled={processing || completed}
+            onToggleRecord={toggleRecording}
+            onSample={playSample}
+          />
+
           {/* this-call decision log (counterfactual memory) */}
           <div className="rounded-lg border bg-card p-3">
             <div className="flex items-center gap-2 mb-2">
@@ -590,6 +718,150 @@ export function LiveCallView({ onNavigate }: { onNavigate: (tab: string) => void
   );
 }
 
+// ─── AssemblyAI Voice Intake panel ────────────────────────────────────────────
+function VoiceIntake({
+  configured,
+  recording,
+  transcribing,
+  intel,
+  disabled,
+  onToggleRecord,
+  onSample,
+}: {
+  configured: boolean | null;
+  recording: boolean;
+  transcribing: boolean;
+  intel: AudioIntel | null;
+  disabled: boolean;
+  onToggleRecord: () => void;
+  onSample: (sampleId: string) => void;
+}) {
+  return (
+    <div className="rounded-lg border bg-card p-3">
+      <div className="flex items-center gap-2 mb-2.5 flex-wrap">
+        <Mic className="h-3.5 w-3.5 text-muted-foreground" />
+        <span className="text-xs font-semibold uppercase tracking-wider">Voice Intake</span>
+        <span className="text-[10px] text-muted-foreground">
+          AssemblyAI speech-to-text · sentiment analysis
+        </span>
+        <span
+          className={cn(
+            "ml-auto inline-flex items-center gap-1 rounded-full border px-2 py-0.5 font-mono text-[9px] font-semibold",
+            configured
+              ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300"
+              : "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300"
+          )}
+          title={
+            configured
+              ? "ASSEMBLYAI_API_KEY detected — recorded audio is transcribed live."
+              : "No ASSEMBLYAI_API_KEY detected — bundled samples replay pre-computed transcripts."
+          }
+        >
+          {configured === null ? "CHECKING…" : configured ? "ASSEMBLYAI · LIVE" : "DEMO MODE · NO KEY"}
+        </span>
+      </div>
+      <div className="flex flex-wrap gap-2 items-center">
+        <Button
+          size="sm"
+          variant={recording ? "destructive" : "secondary"}
+          className="h-8 gap-1.5"
+          disabled={disabled || transcribing}
+          onClick={onToggleRecord}
+        >
+          {recording ? (
+            <>
+              <Square className="h-3 w-3 animate-pulse" /> Stop &amp; transcribe
+            </>
+          ) : (
+            <>
+              <Mic className="h-3 w-3" /> Record customer audio
+            </>
+          )}
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-8 gap-1.5"
+          disabled={disabled || transcribing}
+          onClick={() => onSample("furious-demand")}
+          title="Play a bundled angry-customer recording through the intake pipeline"
+        >
+          <Play className="h-3 w-3" /> Sample · “$50 credit today”
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-8 gap-1.5"
+          disabled={disabled || transcribing}
+          onClick={() => onSample("latefee-dispute")}
+          title="Play a bundled fee-dispute recording through the intake pipeline"
+        >
+          <Play className="h-3 w-3" /> Sample · late-fee dispute
+        </Button>
+        {transcribing && (
+          <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" /> transcribing…
+          </span>
+        )}
+        {recording && (
+          <span className="inline-flex items-center gap-1.5 text-xs text-red-600 dark:text-red-400">
+            <span className="relative flex h-2 w-2">
+              <span className="absolute inline-flex h-full w-full rounded-full bg-red-500 opacity-60 animate-ping" />
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-red-600" />
+            </span>
+            listening to the customer…
+          </span>
+        )}
+      </div>
+      {intel && (
+        <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-zinc-100 dark:border-zinc-800 bg-zinc-50/60 dark:bg-zinc-900/40 px-2.5 py-1.5 text-[10px]">
+          <span className="font-mono font-semibold">
+            {intel.provider === "assemblyai" ? "ASSEMBLYAI" : "DEMO TRANSCRIPT"}
+          </span>
+          <SentimentChip sentiment={intel.sentiment} />
+          <span className="font-mono text-muted-foreground">
+            {Math.round(intel.sentimentConfidence * 100)}% conf
+          </span>
+          {intel.words ? (
+            <span className="font-mono text-muted-foreground">{intel.words} words</span>
+          ) : null}
+          {intel.durationSec ? (
+            <span className="font-mono text-muted-foreground">{intel.durationSec.toFixed(1)}s</span>
+          ) : null}
+          <span className="ml-auto text-muted-foreground italic">
+            transcript loaded → running the committee
+          </span>
+        </div>
+      )}
+      {configured === false && !intel && (
+        <p className="mt-2 text-[10px] text-muted-foreground leading-relaxed">
+          No ASSEMBLYAI_API_KEY detected — the bundled samples replay pre-computed transcripts so
+          the flow stays demonstrable. Add a free key from dashboard.assemblyai.com as the
+          ASSEMBLYAI_API_KEY environment variable to transcribe any recorded audio live.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function SentimentChip({ sentiment }: { sentiment: string }) {
+  const map: Record<string, string> = {
+    NEGATIVE:
+      "border-red-200 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300",
+    POSITIVE:
+      "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300",
+    NEUTRAL:
+      "border-zinc-200 bg-zinc-100 text-zinc-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300",
+  };
+  return (
+    <span
+      className={cn("rounded-full border px-2 py-0.5 font-mono text-[9px] font-semibold", map[sentiment] ?? map.NEUTRAL)}
+    >
+      {sentiment}
+    </span>
+  );
+}
+
 // ─── Chat bubble ───────────────────────────────────────────────────────────────
 function Bubble({
   turn,
@@ -662,7 +934,7 @@ function PersonaPicker({
           <span className="text-sm font-semibold">Customer Experience Committee + Compliance Governor</span>
         </div>
         <div className="flex flex-wrap items-center gap-x-1.5 gap-y-2 text-[11px]">
-          <FlowChip icon={Ear} label="Live Audio / CRM" sub="transcript · sentiment · history" />
+          <FlowChip icon={Ear} label="Live Audio / CRM" sub="AssemblyAI STT · sentiment · history" />
           <Arrow />
           <FlowChip icon={Users} label="Listening Agents" sub="empathy · knowledge · account · legal · context" highlight />
           <Arrow />

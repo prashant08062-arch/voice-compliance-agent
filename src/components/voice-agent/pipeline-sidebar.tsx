@@ -205,6 +205,30 @@ function ListeningCard({
     >
       {data && (
         <div className="space-y-1.5">
+          {data.audio_intel && (
+            <div className="flex items-center gap-2 rounded-md border border-zinc-200 dark:border-zinc-800 bg-zinc-50/70 dark:bg-zinc-900/50 px-2 py-1.5 text-[10px]">
+              <AudioLines className="h-3 w-3 text-muted-foreground" />
+              <span className="font-mono font-semibold">
+                {data.audio_intel.provider === "assemblyai" ? "ASSEMBLYAI" : "DEMO AUDIO"}
+              </span>
+              <span className="text-muted-foreground">sentiment</span>
+              <span
+                className={cn(
+                  "rounded-full border px-1.5 py-0.5 font-mono text-[9px] font-semibold",
+                  data.audio_intel.sentiment === "NEGATIVE"
+                    ? "border-red-200 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300"
+                    : data.audio_intel.sentiment === "POSITIVE"
+                    ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300"
+                    : "border-zinc-200 bg-zinc-100 text-zinc-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300"
+                )}
+              >
+                {data.audio_intel.sentiment}
+              </span>
+              <span className="ml-auto font-mono text-muted-foreground">
+                {Math.round(data.audio_intel.confidence * 100)}%
+              </span>
+            </div>
+          )}
           <AgentRow
             icon={Ear}
             name="Empathy"
